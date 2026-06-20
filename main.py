@@ -63,6 +63,7 @@ import re
 
 
 def clean_lines(text: str):
+    # 建立黑名單
     blacklist = {
         "Facebook",
         "公開留言……",
@@ -77,7 +78,7 @@ def clean_lines(text: str):
 
     for line in text.splitlines():
 
-        line = line.strip()
+        line = line.strip() # 去除空白
 
         if not line:
             continue
@@ -136,12 +137,12 @@ def service():
         input("確認登入後按 Enter...")
 
         for scroll_round in range(30):
-
+            double_check = False
             print(f"掃描第 {scroll_round + 1} 次")
 
             posts = page.locator(
                 '[role="feed"] > div'
-            )
+            ) # CSS Selector 語法找出特定的div
 
             for i in range(posts.count()):
 
@@ -149,13 +150,28 @@ def service():
 
                     text = posts.nth(i).inner_text()
 
-                    if len(text) < 20:
-                        continue
+                    if "…… 查看更多" in text:
+                        print(f"發現{clean_lines(text)[0]}含有查看更多")
+                        input(f"Press Enter to open")
+                        post = posts.nth(i)
+                        see_more = post.get_by_text(
+                            "查看更多",
+                            exact=True
+                        )
+                        if see_more.count() > 0:
+                            see_more.first.click()
+                            double_check = True
+                            continue
+
+
+                    # if len(text) < 20:
+                    #     continue
 
                     lines = clean_lines(text)
 
-                    if len(lines) < 2:
-                        continue
+
+                    # if len(lines) < 2:
+                    #     continue
 
                     clean_text = "\n".join(lines)
 
@@ -193,6 +209,9 @@ def service():
 
                 except Exception as e:
                     print(e)
+            if double_check:
+                print("發現查看更多按鈕準備重新掃描")
+                continue
 
             page.mouse.wheel(
                 0,
