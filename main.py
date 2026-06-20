@@ -182,6 +182,19 @@ def service(debug=False):
                             see_more.first.click()
                             double_check = True
                             continue
+                    elif "顯示更多" in text:
+                        if debug:
+                            print(f"發現{clean_lines(text)[0]}含有顯示更多")
+                            input(f"Press Enter to open")
+
+                        see_more = post.get_by_text(
+                            "顯示更多",
+                            exact=True
+                        )
+                        if see_more.count() > 0:
+                            see_more.first.click()
+                            double_check = True
+                            continue
 
 
                     # if len(text) < 20:
