@@ -108,6 +108,22 @@ def clean_lines(text: str):
 
             return result
 
+        # +2 +8 +15
+        if re.fullmatch(r"\+\d+", line):
+            return result
+
+        # 67 155 31
+        if line.isdigit():
+            return result
+
+        # 1小時 2天 3週
+        if re.fullmatch(r"\d+(分鐘|小時|天|週)", line):
+            if len(result) >= 2:
+                result.pop()
+                result.pop()
+            return result
+
+
         result.append(line)
 
 
@@ -164,7 +180,7 @@ def service(group_id, debug=False):
             "https://www.facebook.com/groups/"+group_id
         )
 
-        input("請滑動至最頂端後按下Enter開始掃描")
+        input("按下Enter開始掃描")
 
         for scroll_round in range(30):
             double_check = False
