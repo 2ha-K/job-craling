@@ -163,7 +163,7 @@ def service(debug=False):
             posts = page.locator(
                 '[role="feed"] > div'
             ) # CSS Selector 語法找出特定的div
-
+            if debug: print(f"count: {posts.count()}")
             for i in range(posts.count()):
 
                 try:
@@ -178,10 +178,15 @@ def service(debug=False):
                             "查看更多",
                             exact=True
                         )
-                        if see_more.count() > 0:
-                            see_more.first.click()
-                            double_check = True
-                            continue
+                        for j in range(see_more.count()):
+
+                            btn = see_more.nth(j)
+
+                            if btn.is_visible():
+                                btn.click(timeout=1000)
+                                double_check = True
+                                break
+                        continue
                     elif "顯示更多" in text:
                         if debug:
                             print(f"發現{clean_lines(text)[0]}含有顯示更多")
@@ -191,10 +196,15 @@ def service(debug=False):
                             "顯示更多",
                             exact=True
                         )
-                        if see_more.count() > 0:
-                            see_more.first.click()
-                            double_check = True
-                            continue
+                        for j in range(see_more.count()):
+
+                            btn = see_more.nth(j)
+
+                            if btn.is_visible():
+                                btn.click(timeout=1000)
+                                double_check = True
+                                break
+                        continue
 
 
                     # if len(text) < 20:
