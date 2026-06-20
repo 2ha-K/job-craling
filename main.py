@@ -104,7 +104,27 @@ def clean_lines(text: str):
     return result
 
 
-def service():
+def get_url(post):
+    link = post.locator('a[href*="/posts/"]').first
+
+    if link.count() == 0:
+        print("找不到 /posts/ 連結")
+        return None
+
+    href = link.get_attribute("href")
+
+    if not href:
+        print("href 是 None")
+        return None
+
+    if href.startswith("/"):
+        url = "https://www.facebook.com" + href
+    else:
+        url = href
+
+    return url.split("?")[0]
+
+def service(debug=False):
 
     keywords = [
         "求老師",
@@ -134,7 +154,7 @@ def service():
             "https://www.facebook.com/groups/628916884757960"
         )
 
-        input("確認登入後按 Enter...")
+        input("請滑動至最頂端後按下Enter開始掃描")
 
         for scroll_round in range(30):
             double_check = False
@@ -147,13 +167,13 @@ def service():
             for i in range(posts.count()):
 
                 try:
-
-                    text = posts.nth(i).inner_text()
-
+                    post = posts.nth(i)
+                    text = post.inner_text()
                     if "…… 查看更多" in text:
-                        print(f"發現{clean_lines(text)[0]}含有查看更多")
-                        input(f"Press Enter to open")
-                        post = posts.nth(i)
+                        if debug:
+                            print(f"發現{clean_lines(text)[0]}含有查看更多")
+                            input(f"Press Enter to open")
+
                         see_more = post.get_by_text(
                             "查看更多",
                             exact=True
@@ -169,11 +189,13 @@ def service():
 
                     lines = clean_lines(text)
 
-
-                    # if len(lines) < 2:
-                    #     continue
+                    if len(lines) < 2:
+                        continue
 
                     clean_text = "\n".join(lines)
+
+                    # 作者
+                    author = lines[0]
 
                     if not any(
                         keyword in clean_text
@@ -181,8 +203,7 @@ def service():
                     ):
                         continue
 
-                    # 作者
-                    author = lines[0]
+
 
                     # 前五行當特徵
                     signature = "\n".join(
@@ -200,7 +221,8 @@ def service():
 
                     results.append({
                         "author": author,
-                        "content": clean_text
+                        "content": clean_text,
+                        "url": get_url(post)
                     })
 
                     print(
@@ -210,7 +232,7 @@ def service():
                 except Exception as e:
                     print(e)
             if double_check:
-                print("發現查看更多按鈕準備重新掃描")
+                if debug: print("發現查看更多按鈕準備重新掃描")
                 continue
 
             page.mouse.wheel(
@@ -237,6 +259,7 @@ def service():
         print(f"貼文 {idx}")
         print("-" * 80)
         print(post["content"][:1500])
+        print(f"url: {post['url']}")
 
 if __name__ == "__main__":
-    service()
+    service(debug=False)
