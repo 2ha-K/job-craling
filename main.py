@@ -99,7 +99,17 @@ def clean_lines(text: str):
         if not line:
             continue
 
+        # 移除顯示較少為尾部和之後的
+        if "顯示較少" in line:
+            line = line.split("顯示較少")[0].strip()
+
+            if line:
+                result.append(line)
+
+            return result
+
         result.append(line)
+
 
     return result
 
