@@ -124,7 +124,7 @@ def get_url(post):
 
     return url.split("?")[0]
 
-def service(debug=False):
+def service(group_id, debug=False):
 
     keywords = [
         "求老師",
@@ -151,7 +151,7 @@ def service(debug=False):
         page = context.new_page()
 
         page.goto(
-            "https://www.facebook.com/groups/628916884757960"
+            "https://www.facebook.com/groups/"+group_id
         )
 
         input("請滑動至最頂端後按下Enter開始掃描")
@@ -285,4 +285,4 @@ def service(debug=False):
         print(f"url: {post['url']}")
 
 if __name__ == "__main__":
-    service(debug=False)
+    service("628916884757960", debug=False)
