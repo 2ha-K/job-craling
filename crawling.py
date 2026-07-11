@@ -1,6 +1,7 @@
 from playwright.sync_api import sync_playwright
 import random
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs, unquote, urlparse
 
 def login():
     """
@@ -73,6 +74,9 @@ POST_LINK_SELECTORS = [
     'a[href*="/groups/"][href*="/posts/"]',
     'a[href*="/permalink/"]',
     'a[href*="story_fbid"]',
+    'a[href*="multi_permalinks"]',
+    'a[href*="/photo.php"]',
+    'a[href*="/videos/"]',
 ]
 
 DATE_TEXT_PATTERN = re.compile(
@@ -241,20 +245,35 @@ def normalize_facebook_time(text, now=None):
         ).isoformat(timespec="seconds")
 
     for date_format in (
-        "%B %d at %I:%M %p",
-        "%b %d at %I:%M %p",
         "%B %d, %Y at %I:%M %p",
         "%b %d, %Y at %I:%M %p",
-        "%B %d",
-        "%b %d",
     ):
         try:
             value = datetime.strptime(text, date_format)
         except ValueError:
             continue
 
-        if value.year == 1900:
-            value = value.replace(year=now.year)
+        return value.isoformat(timespec="seconds")
+
+    for date_format in (
+        "%B %d, %Y at %I:%M %p",
+        "%b %d, %Y at %I:%M %p",
+        "%B %d, %Y",
+        "%b %d, %Y",
+    ):
+        date_text = re.sub(
+            r"\s+at\s+",
+            f", {now.year} at ",
+            text,
+            flags=re.IGNORECASE
+        )
+        if date_text == text:
+            date_text = f"{text}, {now.year}"
+
+        try:
+            value = datetime.strptime(date_text, date_format)
+        except ValueError:
+            continue
 
         return value.isoformat(timespec="seconds")
 
@@ -324,25 +343,215 @@ def get_post_links(post):
     return links
 
 
-def get_url(post):
-    links = get_post_links(post)
-
-    if not links:
-        print("找不到貼文連結")
-        return None
-
-    href = links[0].get_attribute("href")
-
+def normalize_facebook_url(href):
     if not href:
-        print("href 是 None")
         return None
+
+    href = href.strip()
+
+    if href.startswith("https://l.facebook.com/l.php"):
+        query = parse_qs(urlparse(href).query)
+        if query.get("u"):
+            href = unquote(query["u"][0])
 
     if href.startswith("/"):
-        url = "https://www.facebook.com" + href
-    else:
-        url = href
+        href = "https://www.facebook.com" + href
 
-    return url.split("?")[0]
+    parsed = urlparse(href)
+    if not parsed.netloc:
+        return None
+
+    host = parsed.netloc.lower()
+    if not host.endswith("facebook.com") and not host.endswith("fb.com"):
+        return None
+
+    clean_url = parsed._replace(
+        scheme="https",
+        netloc="www.facebook.com",
+        fragment=""
+    )
+
+    query = parse_qs(clean_url.query)
+    keep_query = {}
+    for key in ("story_fbid", "id", "fbid", "multi_permalinks"):
+        if key in query:
+            keep_query[key] = query[key][0]
+
+    query_text = "&".join(
+        f"{key}={value}"
+        for key, value in keep_query.items()
+    )
+
+    return clean_url._replace(query=query_text).geturl().rstrip("/")
+
+
+def score_post_url(url, group_id=None):
+    if not url:
+        return -1
+
+    score = 0
+    parsed = urlparse(url)
+    path = parsed.path
+    query = parse_qs(parsed.query)
+
+    if group_id and f"/groups/{group_id}/" in path:
+        score += 50
+    if "/groups/" in path and "/posts/" in path:
+        score += 45
+    if "/permalink/" in path:
+        score += 35
+    if "story_fbid" in query:
+        score += 35
+    if "multi_permalinks" in query:
+        score += 30
+    if re.search(r"/posts/\d+", path):
+        score += 25
+    if "fbid" in query:
+        score += 15
+    if "/photo.php" in path or "/videos/" in path:
+        score += 10
+    if any(
+        noise in path
+        for noise in (
+            "/comment/",
+            "/comments/",
+            "/reactions/",
+            "/shares/",
+            "/profile.php",
+            "/people/",
+        )
+    ):
+        score -= 40
+
+    return score
+
+
+def get_url_candidates(post):
+    candidates = []
+
+    for link in get_post_links(post):
+        href = safe_get_attribute(link, "href")
+        if href:
+            candidates.append(href)
+
+    try:
+        candidates.extend(
+            post.evaluate(
+                """element => {
+                    const values = [];
+                    const attrs = ["href", "ajaxify", "data-hovercard", "data-ft"];
+                    const nodes = element.querySelectorAll("a, span, div");
+
+                    for (const node of nodes) {
+                        for (const attr of attrs) {
+                            const value = node.getAttribute(attr);
+                            if (value) values.push(value);
+                        }
+
+                        const onclick = node.getAttribute("onclick");
+                        if (onclick) values.push(onclick);
+                    }
+
+                    return values;
+                }"""
+            )
+        )
+    except Exception:
+        pass
+
+    return candidates
+
+
+def extract_urls_from_text(text):
+    if not text:
+        return []
+
+    raw_urls = re.findall(
+        r"https?://(?:www\.|m\.|mbasic\.|web\.)?facebook\.com[^\s\"'<>]+|"
+        r"/(?:groups|posts|permalink|photo\.php|watch|videos)[^\s\"'<>]+",
+        text
+    )
+
+    return [normalize_facebook_url(url) for url in raw_urls]
+
+
+def extract_post_ids_from_text(text):
+    if not text:
+        return []
+
+    ids = []
+    patterns = [
+        r'"top_level_post_id"\s*:\s*"(\d+)"',
+        r'"post_id"\s*:\s*"(\d+)"',
+        r'"story_fbid"\s*:\s*"(\d+)"',
+        r'top_level_post_id[=:"\\]+(\d+)',
+        r'post_id[=:"\\]+(\d+)',
+        r'story_fbid[=:"\\]+(\d+)',
+        r'/posts/(\d+)',
+        r'/permalink/(\d+)',
+        r'[?&]story_fbid=(\d+)',
+        r'[?&]multi_permalinks=(\d+)',
+    ]
+
+    for pattern in patterns:
+        ids.extend(re.findall(pattern, text))
+
+    result = []
+    seen_ids = set()
+    for post_id in ids:
+        if post_id in seen_ids:
+            continue
+        seen_ids.add(post_id)
+        result.append(post_id)
+
+    return result
+
+
+def get_url(post, group_id=None, debug=False):
+    candidates = []
+
+    for candidate in get_url_candidates(post):
+        normalized = normalize_facebook_url(candidate)
+        if normalized:
+            candidates.append(normalized)
+
+        candidates.extend(
+            url for url in extract_urls_from_text(candidate) if url
+        )
+
+        if group_id:
+            candidates.extend(
+                f"https://www.facebook.com/groups/{group_id}/posts/{post_id}"
+                for post_id in extract_post_ids_from_text(candidate)
+            )
+
+    unique_candidates = []
+    seen_urls = set()
+    for candidate in candidates:
+        if candidate in seen_urls:
+            continue
+        seen_urls.add(candidate)
+        unique_candidates.append(candidate)
+
+    scored_candidates = sorted(
+        (
+            (score_post_url(candidate, group_id), candidate)
+            for candidate in unique_candidates
+        ),
+        reverse=True
+    )
+
+    for score, candidate in scored_candidates:
+        if score > 0:
+            return candidate
+
+    print("找不到貼文連結")
+    if debug:
+        print("URL 候選:")
+        for score, candidate in scored_candidates[:20]:
+            print(f"- score={score}: {candidate}")
+
+    return None
 
 def get_timestamp(post, debug=False):
     links = get_post_links(post)
@@ -516,7 +725,7 @@ def service(
                         "author": author,
                         "datetime": get_timestamp(post, debug=debug),
                         "content": clean_text,
-                        "url": get_url(post),
+                        "url": get_url(post, group_id=group_id, debug=debug),
                         "group_url": "https://www.facebook.com/groups/"+group_id,
                         "group_name": group_name
                     })
