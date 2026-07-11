@@ -70,14 +70,18 @@ import re
 
 POST_LINK_SELECTORS = [
     'a[href*="/posts/"]',
+    'a[href*="/groups/"][href*="/posts/"]',
     'a[href*="/permalink/"]',
     'a[href*="story_fbid"]',
 ]
 
 DATE_TEXT_PATTERN = re.compile(
-    r"(剛剛|昨天|\d+\s*(分鐘|小時|天|週|周)|"
+    r"(剛剛|昨天|\d+\s*(分鐘|小時|天|週|周|秒)|"
     r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|"
-    r"\d{1,2}\s*月\s*\d{1,2}\s*日)"
+    r"\d{1,2}\s*月\s*\d{1,2}\s*日|"
+    r"just now|\d+\s*(m|h|d|w|min|hr|day|week)s?\b|"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))",
+    re.IGNORECASE
 )
 
 
@@ -155,20 +159,30 @@ def normalize_facebook_time(text, now=None):
 
     now = now or datetime.now()
     text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"^[\W_]+|[\W_]+$", "", text)
     text = text.replace("週", "周")
+    lower_text = text.lower()
 
-    if text == "剛剛":
+    if text == "剛剛" or lower_text == "just now":
         return now.isoformat(timespec="seconds")
 
-    relative_match = re.search(r"(\d+)\s*(分鐘|小時|天|周)", text)
+    relative_match = (
+        re.search(r"(\d+)\s*(秒|分鐘|小時|天|周)\s*前?", text)
+        or re.search(
+            r"(\d+)\s*(m|h|d|w|min|hr|day|week)s?\s*(ago)?\b",
+            lower_text
+        )
+    )
     if relative_match:
         amount = int(relative_match.group(1))
         unit = relative_match.group(2)
-        if unit == "分鐘":
+        if unit == "秒":
+            value = now - timedelta(seconds=amount)
+        elif unit in {"分鐘", "m", "min"}:
             value = now - timedelta(minutes=amount)
-        elif unit == "小時":
+        elif unit in {"小時", "h", "hr"}:
             value = now - timedelta(hours=amount)
-        elif unit == "天":
+        elif unit in {"天", "d", "day"}:
             value = now - timedelta(days=amount)
         else:
             value = now - timedelta(weeks=amount)
@@ -226,7 +240,77 @@ def normalize_facebook_time(text, now=None):
             minute
         ).isoformat(timespec="seconds")
 
+    for date_format in (
+        "%B %d at %I:%M %p",
+        "%b %d at %I:%M %p",
+        "%B %d, %Y at %I:%M %p",
+        "%b %d, %Y at %I:%M %p",
+        "%B %d",
+        "%b %d",
+    ):
+        try:
+            value = datetime.strptime(text, date_format)
+        except ValueError:
+            continue
+
+        if value.year == 1900:
+            value = value.replace(year=now.year)
+
+        return value.isoformat(timespec="seconds")
+
     return None
+
+
+def safe_get_attribute(locator, attribute):
+    try:
+        return locator.get_attribute(attribute, timeout=500)
+    except Exception:
+        return None
+
+
+def safe_inner_text(locator):
+    try:
+        return locator.inner_text(timeout=500)
+    except Exception:
+        return None
+
+
+def get_time_candidates(post):
+    candidates = []
+
+    try:
+        candidates.extend(
+            post.evaluate(
+                """element => {
+                    const values = [];
+                    const attrs = [
+                        "datetime",
+                        "aria-label",
+                        "title",
+                        "data-tooltip-content",
+                        "data-tooltip",
+                        "aria-description"
+                    ];
+                    const nodes = element.querySelectorAll("a, abbr, span, time");
+
+                    for (const node of nodes) {
+                        for (const attr of attrs) {
+                            const value = node.getAttribute(attr);
+                            if (value) values.push(value);
+                        }
+
+                        if (node.innerText) values.push(node.innerText);
+                        if (node.textContent) values.push(node.textContent);
+                    }
+
+                    return values;
+                }"""
+            )
+        )
+    except Exception:
+        pass
+
+    return candidates
 
 
 def get_post_links(post):
@@ -260,31 +344,50 @@ def get_url(post):
 
     return url.split("?")[0]
 
-def get_timestamp(post):
+def get_timestamp(post, debug=False):
     links = get_post_links(post)
+    scanned_candidates = []
 
     for link in links:
         candidates = [
-            link.get_attribute("datetime"),
-            link.get_attribute("aria-label"),
-            link.get_attribute("title"),
-            link.inner_text(timeout=1000),
+            safe_get_attribute(link, "datetime"),
+            safe_get_attribute(link, "aria-label"),
+            safe_get_attribute(link, "title"),
+            safe_get_attribute(link, "data-tooltip-content"),
+            safe_get_attribute(link, "data-tooltip"),
+            safe_inner_text(link),
         ]
 
         for candidate in candidates:
+            if candidate:
+                scanned_candidates.append(candidate)
             timestamp = normalize_facebook_time(candidate)
             if timestamp:
                 return timestamp
 
-    post_text = post.inner_text(timeout=1000)
+    for candidate in get_time_candidates(post):
+        if not candidate or not DATE_TEXT_PATTERN.search(candidate):
+            continue
+
+        scanned_candidates.append(candidate)
+        timestamp = normalize_facebook_time(candidate)
+        if timestamp:
+            return timestamp
+
+    post_text = safe_inner_text(post) or ""
     for line in post_text.splitlines():
         line = line.strip()
         if DATE_TEXT_PATTERN.search(line):
+            scanned_candidates.append(line)
             timestamp = normalize_facebook_time(line)
             if timestamp:
                 return timestamp
 
     print("找不到時間")
+    if debug:
+        print("時間候選:")
+        for candidate in scanned_candidates[:20]:
+            print(f"- {candidate}")
     return None
 
 import hashlib
@@ -411,7 +514,7 @@ def service(
                     results.append({
                         "post_key": post_key,
                         "author": author,
-                        "datetime": get_timestamp(post),
+                        "datetime": get_timestamp(post, debug=debug),
                         "content": clean_text,
                         "url": get_url(post),
                         "group_url": "https://www.facebook.com/groups/"+group_id,
