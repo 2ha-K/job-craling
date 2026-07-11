@@ -634,7 +634,7 @@ def service(
         page = context.new_page()
 
         page.goto(
-            "https://www.facebook.com/groups/"+group_id
+            "https://www.facebook.com/groups/"+group_id+"/?sorting_setting=RECENT_ACTIVITY"
         )
         group_name = page.title()
 
