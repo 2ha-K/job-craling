@@ -1,7 +1,6 @@
-from os import times
-
 from playwright.sync_api import sync_playwright
 import random
+from datetime import datetime, timedelta
 
 def login():
     """
@@ -68,6 +67,18 @@ def inspect():
 
 
 import re
+
+POST_LINK_SELECTORS = [
+    'a[href*="/posts/"]',
+    'a[href*="/permalink/"]',
+    'a[href*="story_fbid"]',
+]
+
+DATE_TEXT_PATTERN = re.compile(
+    r"(剛剛|昨天|\d+\s*(分鐘|小時|天|週|周)|"
+    r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|"
+    r"\d{1,2}\s*月\s*\d{1,2}\s*日)"
+)
 
 
 def clean_lines(text: str):
@@ -138,14 +149,105 @@ def clean_lines(text: str):
     return result
 
 
-def get_url(post):
-    link = post.locator('a[href*="/posts/"]').first
-
-    if link.count() == 0:
-        print("找不到 /posts/ 連結")
+def normalize_facebook_time(text, now=None):
+    if not text:
         return None
 
-    href = link.get_attribute("href")
+    now = now or datetime.now()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("週", "周")
+
+    if text == "剛剛":
+        return now.isoformat(timespec="seconds")
+
+    relative_match = re.search(r"(\d+)\s*(分鐘|小時|天|周)", text)
+    if relative_match:
+        amount = int(relative_match.group(1))
+        unit = relative_match.group(2)
+        if unit == "分鐘":
+            value = now - timedelta(minutes=amount)
+        elif unit == "小時":
+            value = now - timedelta(hours=amount)
+        elif unit == "天":
+            value = now - timedelta(days=amount)
+        else:
+            value = now - timedelta(weeks=amount)
+        return value.isoformat(timespec="seconds")
+
+    time_match = re.search(
+        r"(上午|下午)?\s*(\d{1,2})[:：](\d{2})",
+        text
+    )
+    hour = 0
+    minute = 0
+    if time_match:
+        period, hour_text, minute_text = time_match.groups()
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if period == "下午" and hour < 12:
+            hour += 12
+        elif period == "上午" and hour == 12:
+            hour = 0
+
+    if "昨天" in text:
+        value = now - timedelta(days=1)
+        return value.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0
+        ).isoformat(timespec="seconds")
+
+    full_date_match = re.search(
+        r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日",
+        text
+    )
+    if full_date_match:
+        year, month, day = map(int, full_date_match.groups())
+        return datetime(
+            year,
+            month,
+            day,
+            hour,
+            minute
+        ).isoformat(timespec="seconds")
+
+    month_day_match = re.search(
+        r"(\d{1,2})\s*月\s*(\d{1,2})\s*日",
+        text
+    )
+    if month_day_match:
+        month, day = map(int, month_day_match.groups())
+        return datetime(
+            now.year,
+            month,
+            day,
+            hour,
+            minute
+        ).isoformat(timespec="seconds")
+
+    return None
+
+
+def get_post_links(post):
+    links = []
+
+    for selector in POST_LINK_SELECTORS:
+        locator = post.locator(selector)
+        for i in range(locator.count()):
+            links.append(locator.nth(i))
+
+    return links
+
+
+def get_url(post):
+    links = get_post_links(post)
+
+    if not links:
+        print("找不到貼文連結")
+        return None
+
+    href = links[0].get_attribute("href")
 
     if not href:
         print("href 是 None")
@@ -159,11 +261,31 @@ def get_url(post):
     return url.split("?")[0]
 
 def get_timestamp(post):
-    time_link = post.locator("a[href*='/posts/']").first
-    if time_link.count() == 0:
-        print("找不到時間")
-        return None
-    return str(time_link.get_attribute("datetime"))
+    links = get_post_links(post)
+
+    for link in links:
+        candidates = [
+            link.get_attribute("datetime"),
+            link.get_attribute("aria-label"),
+            link.get_attribute("title"),
+            link.inner_text(timeout=1000),
+        ]
+
+        for candidate in candidates:
+            timestamp = normalize_facebook_time(candidate)
+            if timestamp:
+                return timestamp
+
+    post_text = post.inner_text(timeout=1000)
+    for line in post_text.splitlines():
+        line = line.strip()
+        if DATE_TEXT_PATTERN.search(line):
+            timestamp = normalize_facebook_time(line)
+            if timestamp:
+                return timestamp
+
+    print("找不到時間")
+    return None
 
 import hashlib
 
@@ -329,6 +451,7 @@ def service(
         print("\n")
         print(f"貼文 {idx}")
         print("-" * 80)
+        print(f"{post['datetime']}")
         print(post["content"][:1500])
         print(f"url: {post['url']}")
 
